@@ -119,7 +119,7 @@ class ProcessAsyncMediaFileMoveJob implements ShouldQueue
             Storage::disk($finalDisk)->put($finalPath, $tempFileContents);
 
             // Удаляем временный файл после успешного копирования
-            Storage::disk($tempDisk)->delete($tempPath);
+            // Storage::disk($tempDisk)->delete($tempPath);  // Временно отключаем, чтобы проверить, здесь ли проблема
 
             // Обновляем запись медиа
             $customProperties = $media->custom_properties;

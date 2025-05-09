@@ -16,6 +16,7 @@ use Spatie\MediaLibrary\MediaCollections\Models\Media;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 use Throwable;
+use Illuminate\Support\Arr;
 
 class SpatieMediaLibraryFileUpload extends FileUpload
 {
@@ -477,5 +478,66 @@ class SpatieMediaLibraryFileUpload extends FileUpload
 
         // Используем статический метод dispatch класса задания
         $jobClass::dispatch($mediaId);
+    }
+
+    /**
+     * Переопределяем сохранение файлов, чтобы в асинхронном режиме не удалять временный файл
+     * Livewire, пока асинхронное задание не переместит его.
+     */
+    public function saveUploadedFiles(): void
+    {
+        // Если асинхронный режим выключен, используем стандартную логику родителя
+        if (! $this->shouldUseAsyncFileMove()) {
+            parent::saveUploadedFiles();
+            return;
+        }
+
+        // В асинхронном режиме нам нужно выполнить ту же логику, что и у родителя,
+        // но пропустить $file->delete() для временного файла.
+        if (blank($this->getState())) {
+            $this->state([]);
+            return;
+        }
+
+        if (! $this->shouldStoreFiles()) {
+            return;
+        }
+
+        $state = array_filter(array_map(function (TemporaryUploadedFile | string $file) {
+            if (! $file instanceof TemporaryUploadedFile) {
+                return $file;
+            }
+
+            // Файл уже сохранён в saveUploadedFileUsing (mediaRecord создан),
+            // поэтому просто возвращаем uuid из кастомного метода и НЕ удаляем файл.
+            $callback = $this->saveUploadedFileUsing;
+
+            if (! $callback) {
+                return $file; // оставляем как есть
+            }
+
+            $storedFile = $this->evaluate($callback, [
+                'file' => $file,
+            ]);
+
+            if ($storedFile === null) {
+                return null;
+            }
+
+            // Сохраняем оригинальное имя файла, если настроено
+            $this->storeFileName($storedFile, $file->getClientOriginalName());
+
+            // ВАЖНО: не вызываем $file->delete(); оставляем файл во временном хранилище
+
+            return $storedFile;
+        }, Arr::wrap($this->getState())));
+
+        if ($this->isReorderable && ($callback = $this->reorderUploadedFilesUsing)) {
+            $state = $this->evaluate($callback, [
+                'state' => $state,
+            ]);
+        }
+
+        $this->state($state);
     }
 }
