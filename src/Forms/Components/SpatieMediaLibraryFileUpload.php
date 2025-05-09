@@ -103,13 +103,50 @@ class SpatieMediaLibraryFileUpload extends FileUpload
             /** @var ?Media $media */
             $media = $component->getRecord()->getRelationValue('media')->firstWhere('uuid', $file);
 
+            if (!$media) {
+                return null;
+            }
+
+            // Для асинхронной обработки файлов
+            if ($media->hasCustomProperty('is_processing_async') && $media->hasCustomProperty('path') && $media->hasCustomProperty('disk')) {
+                $tmpDisk = $media->getCustomProperty('disk');
+                $tmpPath = $media->getCustomProperty('path');
+                $originalFilename = $media->getCustomProperty('original_filename', $media->file_name);
+
+                try {
+                    // Всегда используем подписанный URL для временных файлов, т.к. они обычно приватные
+                    // Для S3 это сгенерирует presigned URL с ограниченным сроком действия
+                    $expiration = now()->addMinutes(5);
+                    $url = Storage::disk($tmpDisk)->temporaryUrl($tmpPath, $expiration);
+
+                    return [
+                        'name' => $media->name ?? $originalFilename,
+                        'size' => $media->size,
+                        'type' => $media->mime_type,
+                        'url' => $url,
+                    ];
+                } catch (Throwable $exception) {
+                    // Если не удалось получить signed URL, просто продолжаем стандартным способом
+                    // Но логируем ошибку
+                    \Illuminate\Support\Facades\Log::warning(
+                        'Не удалось получить временный URL для асинхронного файла',
+                        [
+                            'media_id' => $media->id,
+                            'path' => $tmpPath,
+                            'disk' => $tmpDisk,
+                            'error' => $exception->getMessage()
+                        ]
+                    );
+                }
+            }
+
             $url = null;
 
             if ($component->getVisibility() === 'private') {
                 $conversion = $component->getConversion();
 
                 try {
-                    $url = $media?->getTemporaryUrl(
+                    $url = $media->getTemporaryUrl(
                         now()->addMinutes(5),
                         (filled($conversion) && $media->hasGeneratedConversion($conversion)) ? $conversion : '',
                     );
@@ -118,16 +155,16 @@ class SpatieMediaLibraryFileUpload extends FileUpload
                 }
             }
 
-            if ($component->getConversion() && $media?->hasGeneratedConversion($component->getConversion())) {
+            if ($component->getConversion() && $media->hasGeneratedConversion($component->getConversion())) {
                 $url ??= $media->getUrl($component->getConversion());
             }
 
-            $url ??= $media?->getUrl();
+            $url ??= $media->getUrl();
 
             return [
-                'name' => $media?->getAttributeValue('name') ?? $media?->getAttributeValue('file_name'),
-                'size' => $media?->getAttributeValue('size'),
-                'type' => $media?->getAttributeValue('mime_type'),
+                'name' => $media->getAttributeValue('name') ?? $media->getAttributeValue('file_name'),
+                'size' => $media->getAttributeValue('size'),
+                'type' => $media->getAttributeValue('mime_type'),
                 'url' => $url,
             ];
         });
@@ -166,7 +203,7 @@ class SpatieMediaLibraryFileUpload extends FileUpload
                 // Информация для создания записи в БД
                 $mediaRecord = new $mediaClass();
                 $mediaRecord->uuid = $uuid;
-                $mediaRecord->model_type = get_class($record);
+                $mediaRecord->model_type = method_exists($record, 'getMorphClass') ? $record->getMorphClass() : get_class($record);
                 $mediaRecord->model_id = $record->getKey();
                 $mediaRecord->collection_name = $component->getCollection() ?? 'default';
                 $mediaRecord->name = $component->getMediaName($file) ?? pathinfo($file->getClientOriginalName(), PATHINFO_FILENAME);
