@@ -115,8 +115,14 @@ class ProcessAsyncMediaFileMoveJob implements ShouldQueue
             $finalPath = $finalDirectory . $filename;
 
             // Копируем файл из временного хранилища в целевое
-            $tempFileContents = Storage::disk($tempDisk)->get($tempPath);
-            Storage::disk($finalDisk)->put($finalPath, $tempFileContents);
+            // Оптимизация для S3: используем прямое копирование на стороне сервера вместо загрузки файла в память
+            if ($this->isS3Disk($tempDisk) && $this->isS3Disk($finalDisk)) {
+                // Для S3->S3 используем прямое копирование на стороне сервера
+                $this->copyBetweenS3($tempDisk, $tempPath, $finalDisk, $finalPath);
+            } else {
+                // Для разных дисков или не S3 используем потоковую передачу
+                $this->copyUsingStreams($tempDisk, $tempPath, $finalDisk, $finalPath);
+            }
 
             // Удаляем временный файл после успешного копирования
             // Storage::disk($tempDisk)->delete($tempPath);  // Временно отключаем, чтобы проверить, здесь ли проблема
@@ -150,6 +156,86 @@ class ProcessAsyncMediaFileMoveJob implements ShouldQueue
 
             // Пробрасываем исключение для повторного выполнения задания
             throw $e;
+        }
+    }
+
+    /**
+     * Проверяет, является ли диск типом S3.
+     *
+     * @param string $diskName
+     * @return bool
+     */
+    protected function isS3Disk(string $diskName): bool
+    {
+        $driver = config("filesystems.disks.{$diskName}.driver");
+        return $driver === 's3';
+    }
+
+    /**
+     * Копирует файл между двумя S3 дисками используя операцию копирования AWS на стороне сервера.
+     * Это не загружает данные на сервер, что оптимально для больших файлов.
+     *
+     * @param string $sourceDisk
+     * @param string $sourcePath
+     * @param string $targetDisk
+     * @param string $targetPath
+     * @return void
+     */
+    protected function copyBetweenS3(string $sourceDisk, string $sourcePath, string $targetDisk, string $targetPath): void
+    {
+        // Получаем S3 клиенты для обоих дисков
+        $s3Source = Storage::disk($sourceDisk)->getClient();
+        $s3Target = Storage::disk($targetDisk)->getClient();
+
+        // Получаем информацию о бакетах
+        $sourceBucket = config("filesystems.disks.{$sourceDisk}.bucket");
+        $targetBucket = config("filesystems.disks.{$targetDisk}.bucket");
+
+        // Если это один и тот же бакет, используем простое копирование
+        if ($sourceBucket === $targetBucket && $s3Source === $s3Target) {
+            $s3Source->copyObject([
+                'Bucket' => $targetBucket,
+                'CopySource' => urlencode($sourceBucket . '/' . $sourcePath),
+                'Key' => $targetPath,
+            ]);
+        } else {
+            // Если разные бакеты, используем объект источника как источник копирования
+            $s3Target->copyObject([
+                'Bucket' => $targetBucket,
+                'CopySource' => urlencode($sourceBucket . '/' . $sourcePath),
+                'Key' => $targetPath,
+            ]);
+        }
+    }
+
+    /**
+     * Копирует файл между дисками с использованием потоковой передачи.
+     * Это не загружает весь файл в память одновременно.
+     *
+     * @param string $sourceDisk
+     * @param string $sourcePath
+     * @param string $targetDisk
+     * @param string $targetPath
+     * @return void
+     */
+    protected function copyUsingStreams(string $sourceDisk, string $sourcePath, string $targetDisk, string $targetPath): void
+    {
+        // Открываем поток для чтения из исходного файла
+        $sourceStream = Storage::disk($sourceDisk)->readStream($sourcePath);
+
+        if ($sourceStream === false) {
+            throw new \RuntimeException("Не удалось открыть поток для чтения из {$sourceDisk}:{$sourcePath}");
+        }
+
+        // Записываем поток в целевой файл
+        $success = Storage::disk($targetDisk)->writeStream($targetPath, $sourceStream);
+
+        if (is_resource($sourceStream)) {
+            fclose($sourceStream);
+        }
+
+        if (!$success) {
+            throw new \RuntimeException("Не удалось записать файл в {$targetDisk}:{$targetPath}");
         }
     }
 }
