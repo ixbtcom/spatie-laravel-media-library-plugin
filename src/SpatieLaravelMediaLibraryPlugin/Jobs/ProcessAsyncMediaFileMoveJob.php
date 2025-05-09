@@ -67,8 +67,7 @@ class ProcessAsyncMediaFileMoveJob implements ShouldQueue
             // Проверяем наличие временных данных в кастомных свойствах
             if (
                 !$media->hasCustomProperty('path') ||
-                !$media->hasCustomProperty('disk') ||
-                !$media->hasCustomProperty('is_processing_async')
+                !$media->hasCustomProperty('disk')
             ) {
                 Log::error('Отсутствуют необходимые данные для асинхронного перемещения', [
                     'media_id' => $this->mediaId,
@@ -139,8 +138,7 @@ class ProcessAsyncMediaFileMoveJob implements ShouldQueue
             $media->disk = $finalDisk;
             $media->save();
 
-            // Регенерируем все производные файлы (конверсии, адаптивные изображения)
-            $media->regenerateAllDerivedFiles();
+            // Не вызываем regenerateAllDerivedFiles(), так как этот метод не существует
 
             Log::info('Файл успешно перемещен асинхронно', [
                 'media_id' => $this->mediaId,
