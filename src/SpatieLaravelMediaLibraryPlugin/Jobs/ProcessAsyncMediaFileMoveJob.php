@@ -52,23 +52,31 @@ class ProcessAsyncMediaFileMoveJob implements ShouldQueue
      */
     public function handle(): void
     {
+        echo "🚀 Начинаем асинхронное перемещение файла (ID: {$this->mediaId})\n";
+        Log::info("Начинаем асинхронное перемещение файла", ['media_id' => $this->mediaId]);
+
         try {
             // Получаем запись медиа
+            echo "📄 Получаем информацию о медиа-записи...\n";
             $mediaClass = Config::get('media-library.media_model', Media::class);
             $media = $mediaClass::find($this->mediaId);
 
             if (!$media) {
+                echo "❌ Медиа не найдено (ID: {$this->mediaId})\n";
                 Log::error('Медиа не найдено для асинхронного перемещения', [
                     'media_id' => $this->mediaId,
                 ]);
                 return;
             }
 
+            echo "✅ Медиа найдено: {$media->file_name} (ID: {$media->id})\n";
+
             // Проверяем наличие временных данных в кастомных свойствах
             if (
                 !$media->hasCustomProperty('path') ||
                 !$media->hasCustomProperty('disk')
             ) {
+                echo "❌ Отсутствуют необходимые данные в кастомных свойствах\n";
                 Log::error('Отсутствуют необходимые данные для асинхронного перемещения', [
                     'media_id' => $this->mediaId,
                     'custom_properties' => $media->custom_properties,
@@ -80,8 +88,17 @@ class ProcessAsyncMediaFileMoveJob implements ShouldQueue
             $tempDisk = $media->getCustomProperty('disk');
             $tempPath = $media->getCustomProperty('path');
 
+            echo "📁 Временный файл: {$tempDisk}:{$tempPath}\n";
+            Log::info("Информация о временном файле", [
+                'media_id' => $this->mediaId,
+                'temp_disk' => $tempDisk,
+                'temp_path' => $tempPath
+            ]);
+
             // Проверяем, существует ли временный файл
+            echo "🔍 Проверяем существование временного файла...\n";
             if (!Storage::disk($tempDisk)->exists($tempPath)) {
+                echo "❌ Временный файл не найден: {$tempDisk}:{$tempPath}\n";
                 Log::error('Временный файл не найден для асинхронного перемещения', [
                     'media_id' => $this->mediaId,
                     'temp_disk' => $tempDisk,
@@ -89,8 +106,10 @@ class ProcessAsyncMediaFileMoveJob implements ShouldQueue
                 ]);
                 return;
             }
+            echo "✅ Временный файл существует\n";
 
             // Определяем целевой диск
+            echo "🔍 Определяем целевой диск для хранения...\n";
             $finalDisk = $media->getCustomProperty('disk', null);
             if (!$finalDisk) {
                 // Если диск не определен, используем диск по умолчанию
@@ -99,6 +118,7 @@ class ProcessAsyncMediaFileMoveJob implements ShouldQueue
                 $finalDisk = $model->getMediaCollection($collection)->diskName ?? Config::get('media-library.disk_name', 's3');
 
                 if (!$finalDisk) {
+                    echo "❌ Не удалось определить целевой диск\n";
                     Log::error('Не удалось определить целевой диск для асинхронного перемещения', [
                         'media_id' => $this->mediaId,
                         'collection' => $collection,
@@ -106,27 +126,51 @@ class ProcessAsyncMediaFileMoveJob implements ShouldQueue
                     return;
                 }
             }
+            echo "✅ Целевой диск: {$finalDisk}\n";
 
             // Получаем генератор путей и определяем целевой путь
+            echo "📁 Определяем целевой путь файла...\n";
             $pathGenerator = PathGeneratorFactory::create($media);
             $finalDirectory = $pathGenerator->getPath($media);
             $filename = $media->file_name;
             $finalPath = $finalDirectory . $filename;
+            echo "📁 Целевой путь: {$finalDisk}:{$finalPath}\n";
+
+            Log::info("Копирование файла", [
+                'media_id' => $this->mediaId,
+                'from' => "{$tempDisk}:{$tempPath}",
+                'to' => "{$finalDisk}:{$finalPath}",
+                'size' => Storage::disk($tempDisk)->size($tempPath)
+            ]);
 
             // Копируем файл из временного хранилища в целевое
             // Оптимизация для S3: используем прямое копирование на стороне сервера вместо загрузки файла в память
             if ($this->isS3Disk($tempDisk) && $this->isS3Disk($finalDisk)) {
-                // Для S3->S3 используем прямое копирование на стороне сервера
-                $this->copyBetweenS3($tempDisk, $tempPath, $finalDisk, $finalPath);
+                echo "☁️ Используем прямое копирование S3 -> S3...\n";
+                try {
+                    $this->copyBetweenS3($tempDisk, $tempPath, $finalDisk, $finalPath);
+                    echo "✅ S3 копирование успешно завершено\n";
+                } catch (\Exception $e) {
+                    echo "❌ Ошибка при S3 копировании: " . $e->getMessage() . "\n";
+                    throw $e;
+                }
             } else {
-                // Для разных дисков или не S3 используем потоковую передачу
-                $this->copyUsingStreams($tempDisk, $tempPath, $finalDisk, $finalPath);
+                echo "📤 Используем потоковую передачу между дисками...\n";
+                try {
+                    $this->copyUsingStreams($tempDisk, $tempPath, $finalDisk, $finalPath);
+                    echo "✅ Потоковое копирование успешно завершено\n";
+                } catch (\Exception $e) {
+                    echo "❌ Ошибка при потоковом копировании: " . $e->getMessage() . "\n";
+                    throw $e;
+                }
             }
 
             // Удаляем временный файл после успешного копирования
             // Storage::disk($tempDisk)->delete($tempPath);  // Временно отключаем, чтобы проверить, здесь ли проблема
+            echo "⏭️ Пропускаем удаление временного файла\n";
 
             // Обновляем запись медиа
+            echo "📝 Обновляем запись медиа...\n";
             $customProperties = $media->custom_properties;
 
             // Удаляем временные свойства, но сохраняем path для CustomPathGenerator
@@ -137,15 +181,18 @@ class ProcessAsyncMediaFileMoveJob implements ShouldQueue
             $media->custom_properties = $customProperties;
             $media->disk = $finalDisk;
             $media->save();
+            echo "✅ Запись медиа успешно обновлена\n";
 
             // Не вызываем regenerateAllDerivedFiles(), так как этот метод не существует
 
+            echo "🎉 Файл успешно перемещен асинхронно\n";
             Log::info('Файл успешно перемещен асинхронно', [
                 'media_id' => $this->mediaId,
                 'from' => "{$tempDisk}:{$tempPath}",
                 'to' => "{$finalDisk}:{$finalPath}",
             ]);
         } catch (Throwable $e) {
+            echo "❌ ОШИБКА: " . $e->getMessage() . "\n";
             Log::error('Ошибка при асинхронном перемещении файла', [
                 'media_id' => $this->mediaId,
                 'error' => $e->getMessage(),
@@ -182,15 +229,20 @@ class ProcessAsyncMediaFileMoveJob implements ShouldQueue
     protected function copyBetweenS3(string $sourceDisk, string $sourcePath, string $targetDisk, string $targetPath): void
     {
         // Получаем S3 клиенты для обоих дисков
+        echo "  📊 Получаем клиенты S3...\n";
         $s3Source = Storage::disk($sourceDisk)->getClient();
         $s3Target = Storage::disk($targetDisk)->getClient();
 
         // Получаем информацию о бакетах
+        echo "  📊 Получаем информацию о бакетах...\n";
         $sourceBucket = config("filesystems.disks.{$sourceDisk}.bucket");
         $targetBucket = config("filesystems.disks.{$targetDisk}.bucket");
 
+        echo "  📊 Исходный бакет: {$sourceBucket}, Целевой бакет: {$targetBucket}\n";
+
         // Если это один и тот же бакет, используем простое копирование
         if ($sourceBucket === $targetBucket && $s3Source === $s3Target) {
+            echo "  📊 Копирование внутри одного бакета: {$sourceBucket}\n";
             $s3Source->copyObject([
                 'Bucket' => $targetBucket,
                 'CopySource' => urlencode($sourceBucket . '/' . $sourcePath),
@@ -198,12 +250,14 @@ class ProcessAsyncMediaFileMoveJob implements ShouldQueue
             ]);
         } else {
             // Если разные бакеты, используем объект источника как источник копирования
+            echo "  📊 Копирование между разными бакетами: {$sourceBucket} -> {$targetBucket}\n";
             $s3Target->copyObject([
                 'Bucket' => $targetBucket,
                 'CopySource' => urlencode($sourceBucket . '/' . $sourcePath),
                 'Key' => $targetPath,
             ]);
         }
+        echo "  ✅ S3 операция копирования выполнена\n";
     }
 
     /**
@@ -219,21 +273,29 @@ class ProcessAsyncMediaFileMoveJob implements ShouldQueue
     protected function copyUsingStreams(string $sourceDisk, string $sourcePath, string $targetDisk, string $targetPath): void
     {
         // Открываем поток для чтения из исходного файла
+        echo "  📊 Открываем поток для чтения из {$sourceDisk}:{$sourcePath}...\n";
         $sourceStream = Storage::disk($sourceDisk)->readStream($sourcePath);
 
         if ($sourceStream === false) {
+            echo "  ❌ Не удалось открыть поток для чтения\n";
             throw new \RuntimeException("Не удалось открыть поток для чтения из {$sourceDisk}:{$sourcePath}");
         }
+        echo "  ✅ Поток успешно открыт\n";
 
         // Записываем поток в целевой файл
+        echo "  📊 Записываем поток в {$targetDisk}:{$targetPath}...\n";
         $success = Storage::disk($targetDisk)->writeStream($targetPath, $sourceStream);
 
         if (is_resource($sourceStream)) {
+            echo "  📊 Закрываем исходный поток...\n";
             fclose($sourceStream);
         }
 
         if (!$success) {
+            echo "  ❌ Не удалось записать файл\n";
             throw new \RuntimeException("Не удалось записать файл в {$targetDisk}:{$targetPath}");
         }
+
+        echo "  ✅ Поток успешно записан в целевой файл\n";
     }
 }
