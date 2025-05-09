@@ -57,11 +57,11 @@ class SpatieMediaLibraryFileUpload extends FileUpload
             $media = $record->load('media')->getMedia($component->getCollection() ?? 'default')
                 ->when(
                     $component->hasMediaFilter(),
-                    fn (Collection $media) => $component->filterMedia($media)
+                    fn(Collection $media) => $component->filterMedia($media)
                 )
                 ->when(
                     ! $component->isMultiple(),
-                    fn (Collection $media): Collection => $media->take(1),
+                    fn(Collection $media): Collection => $media->take(1),
                 )
                 ->mapWithKeys(function (Media $media): array {
                     $uuid = $media->getAttributeValue('uuid');
@@ -140,8 +140,14 @@ class SpatieMediaLibraryFileUpload extends FileUpload
                 return null;
             }
 
+            $disk = config('livewire.temporary_file_upload_disk', 's3');
+
+            $pathToTemporaryLivewireFile = (string) Str::of($file->getRealPath())
+                ->after(Storage::disk($disk)->path('/'))
+                ->ltrim('/');
+
             /** @var FileAdder $mediaAdder */
-            $mediaAdder = $record->addMediaFromString($file->get());
+            $mediaAdder = $record->addMediaFromDisk($pathToTemporaryLivewireFile, $disk);
 
             $filename = $component->getUploadedFileNameForStorage($file);
 
@@ -252,8 +258,8 @@ class SpatieMediaLibraryFileUpload extends FileUpload
         $record
             ->getMedia($this->getCollection() ?? 'default')
             ->whereNotIn('uuid', array_keys($this->getState() ?? []))
-            ->when($this->hasMediaFilter(), fn (Collection $media): Collection => $this->filterMedia($media))
-            ->each(fn (Media $media) => $media->delete());
+            ->when($this->hasMediaFilter(), fn(Collection $media): Collection => $this->filterMedia($media))
+            ->each(fn(Media $media) => $media->delete());
     }
 
     public function getDiskName(): string
@@ -270,7 +276,7 @@ class SpatieMediaLibraryFileUpload extends FileUpload
         /** @phpstan-ignore-next-line */
         $diskNameFromRegisteredConversions = $model
             ->getRegisteredMediaCollections()
-            ->filter(fn (MediaCollection $mediaCollection): bool => $mediaCollection->name === $collection)
+            ->filter(fn(MediaCollection $mediaCollection): bool => $mediaCollection->name === $collection)
             ->first()
             ?->diskName;
 
