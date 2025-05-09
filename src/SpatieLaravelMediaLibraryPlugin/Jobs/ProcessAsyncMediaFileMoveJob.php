@@ -165,23 +165,61 @@ class ProcessAsyncMediaFileMoveJob implements ShouldQueue
                 }
             }
 
-            // Удаляем временный файл после успешного копирования
-            // Storage::disk($tempDisk)->delete($tempPath);  // Временно отключаем, чтобы проверить, здесь ли проблема
-            echo "⏭️ Пропускаем удаление временного файла\n";
+            // Проверяем, существует ли файл по новому пути
+            echo "🔍 Проверяем, что файл успешно скопирован...\n";
+            if (Storage::disk($finalDisk)->exists($finalPath)) {
+                $fileSize = Storage::disk($finalDisk)->size($finalPath);
+                echo "✅ Файл успешно скопирован в {$finalDisk}:{$finalPath} (размер: " . $this->formatBytes($fileSize) . ")\n";
+
+                // Удаляем временный файл после успешного копирования и проверки
+                echo "🗑️ Удаляем временный файл {$tempDisk}:{$tempPath}...\n";
+                $deleteResult = Storage::disk($tempDisk)->delete($tempPath);
+
+                if ($deleteResult) {
+                    echo "✅ Временный файл успешно удален\n";
+                } else {
+                    echo "⚠️ Не удалось удалить временный файл, но копирование прошло успешно\n";
+                    Log::warning('Не удалось удалить временный файл после асинхронного перемещения', [
+                        'media_id' => $this->mediaId,
+                        'temp_disk' => $tempDisk,
+                        'temp_path' => $tempPath,
+                    ]);
+                }
+            } else {
+                echo "⚠️ Не удалось найти скопированный файл по пути {$finalDisk}:{$finalPath}. Временный файл не будет удален.\n";
+                Log::warning('Файл не обнаружен по целевому пути после копирования', [
+                    'media_id' => $this->mediaId,
+                    'target_disk' => $finalDisk,
+                    'target_path' => $finalPath,
+                ]);
+            }
 
             // Обновляем запись медиа
             echo "📝 Обновляем запись медиа...\n";
             $customProperties = $media->custom_properties;
 
-            // Удаляем временные свойства, но сохраняем path для CustomPathGenerator
+            echo "🔍 Текущие custom_properties: " . json_encode($customProperties) . "\n";
+
+            // Удаляем временные свойства
             unset($customProperties['original_filename']);
             unset($customProperties['is_processing_async']);
+            // Также удаляем свойства пути и диска, т.к. они относятся к временному файлу
+            // Важно! Удаляем свойства path и disk, чтобы в дальнейшем медиа использовало
+            // стандартные механизмы определения пути через PathGenerator
+            unset($customProperties['path']);
+            unset($customProperties['disk']);
+
+            echo "🔄 Обновленные custom_properties: " . json_encode($customProperties) . "\n";
 
             // Обновляем запись медиа
             $media->custom_properties = $customProperties;
             $media->disk = $finalDisk;
             $media->save();
-            echo "✅ Запись медиа успешно обновлена\n";
+
+            // Проверяем, что изменения сохранились
+            $refreshedMedia = $mediaClass::find($this->mediaId);
+            echo "✅ Проверка после сохранения. Custom properties: " . json_encode($refreshedMedia->custom_properties) . "\n";
+            echo "✅ Финальный диск: " . $refreshedMedia->disk . "\n";
 
             // Не вызываем regenerateAllDerivedFiles(), так как этот метод не существует
 
@@ -297,5 +335,25 @@ class ProcessAsyncMediaFileMoveJob implements ShouldQueue
         }
 
         echo "  ✅ Поток успешно записан в целевой файл\n";
+    }
+
+    /**
+     * Форматирует размер файла в человекочитаемый вид
+     *
+     * @param int $bytes
+     * @param int $precision
+     * @return string
+     */
+    protected function formatBytes($bytes, $precision = 2): string
+    {
+        $units = ['B', 'KB', 'MB', 'GB', 'TB'];
+
+        $bytes = max($bytes, 0);
+        $pow = floor(($bytes ? log($bytes) : 0) / log(1024));
+        $pow = min($pow, count($units) - 1);
+
+        $bytes /= pow(1024, $pow);
+
+        return round($bytes, $precision) . ' ' . $units[$pow];
     }
 }
