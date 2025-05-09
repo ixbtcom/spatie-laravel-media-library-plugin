@@ -50,6 +50,13 @@ class SpatieMediaLibraryFileUpload extends FileUpload
      */
     protected array | Closure | null $properties = null;
 
+    /**
+     * Флаг, указывающий, следует ли использовать асинхронное перемещение файлов.
+     *
+     * @var bool | Closure
+     */
+    protected bool | Closure $useAsyncFileMove = false;
+
     protected function setUp(): void
     {
         parent::setUp();
@@ -148,6 +155,53 @@ class SpatieMediaLibraryFileUpload extends FileUpload
                 ->after(Storage::disk($disk)->path('/'))
                 ->ltrim('/');
 
+            // Асинхронная обработка, если включена
+            if ($component->shouldUseAsyncFileMove()) {
+                // Подготавливаем данные для Media
+                $uuid = Str::uuid()->toString();
+                $mediaClass = ($record && method_exists($record, 'getMediaModel')) ? $record->getMediaModel() : null;
+                $mediaClass ??= config('media-library.media_model', Media::class);
+
+                // Информация для создания записи в БД
+                $mediaRecord = new $mediaClass();
+                $mediaRecord->uuid = $uuid;
+                $mediaRecord->model_type = get_class($record);
+                $mediaRecord->model_id = $record->getKey();
+                $mediaRecord->collection_name = $component->getCollection() ?? 'default';
+                $mediaRecord->name = $component->getMediaName($file) ?? pathinfo($file->getClientOriginalName(), PATHINFO_FILENAME);
+                $mediaRecord->file_name = $file->getFilename();
+                $mediaRecord->mime_type = $file->getMimeType();
+                $mediaRecord->disk = $disk;
+                $mediaRecord->size = $file->getSize();
+                $mediaRecord->manipulations = $component->getManipulations();
+                $mediaRecord->responsive_images = [];
+
+                // Путь к временному файлу для выборки при отображении
+                $directoryPath = dirname($pathToTemporaryLivewireFile);
+
+                // Кастомные свойства для асинхронного перемещения
+                $customProperties = $component->getCustomProperties();
+                $customProperties['path'] = $directoryPath;
+                $customProperties['temp_path_for_async_move'] = $pathToTemporaryLivewireFile;
+                $customProperties['temp_disk_for_async_move'] = $disk;
+                $customProperties['original_filename_for_async_move'] = $file->getClientOriginalName();
+                $customProperties['is_processing_async_move'] = true;
+
+                $mediaRecord->custom_properties = $customProperties;
+
+                // Сохраняем запись и запускаем асинхронное задание
+                $mediaRecord->save();
+
+                // Позиция в порядке сортировки
+                $mediaClass::setNewOrder([$mediaRecord->id]);
+
+                // Диспетчеризация задания для асинхронного перемещения
+                $component->dispatchAsyncJob($mediaRecord->id);
+
+                return $uuid;
+            }
+
+            // Синхронная обработка (существующий код)
             /** @var FileAdder $mediaAdder */
             $mediaAdder = $record->addMediaFromDisk($pathToTemporaryLivewireFile, $disk);
 
@@ -349,5 +403,46 @@ class SpatieMediaLibraryFileUpload extends FileUpload
         return $this->evaluate($this->mediaName, [
             'file' => $file,
         ]);
+    }
+
+    /**
+     * Устанавливает флаг использования асинхронного перемещения файлов.
+     *
+     * @param bool | Closure $condition
+     * @return static
+     */
+    public function useAsyncFileMove(bool | Closure $condition = true): static
+    {
+        $this->useAsyncFileMove = $condition;
+
+        return $this;
+    }
+
+    /**
+     * Проверяет, следует ли использовать асинхронное перемещение файлов.
+     *
+     * @return bool
+     */
+    public function shouldUseAsyncFileMove(): bool
+    {
+        return (bool) $this->evaluate($this->useAsyncFileMove);
+    }
+
+    /**
+     * Диспетчеризирует задачу для асинхронного перемещения файла.
+     *
+     * @param int $mediaId
+     * @return void
+     */
+    protected function dispatchAsyncJob(int $mediaId): void
+    {
+        $jobClass = "\\Filament\\SpatieLaravelMediaLibraryPlugin\\Jobs\\ProcessAsyncMediaFileMoveJob";
+        $job = new $jobClass($mediaId);
+
+        if (method_exists($job, 'dispatch')) {
+            $job->dispatch();
+        } else {
+            dispatch($job);
+        }
     }
 }

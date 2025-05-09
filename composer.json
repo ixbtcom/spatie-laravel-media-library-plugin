@@ -17,6 +17,13 @@
             "Filament\\": "src"
         }
     },
+    "extra": {
+        "laravel": {
+            "providers": [
+                "Filament\\SpatieLaravelMediaLibraryPlugin\\SpatieLaravelMediaLibraryPluginServiceProvider"
+            ]
+        }
+    },
     "config": {
         "sort-packages": true
     },
