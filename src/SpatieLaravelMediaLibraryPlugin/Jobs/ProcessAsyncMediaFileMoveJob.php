@@ -65,8 +65,9 @@ class ProcessAsyncMediaFileMoveJob implements ShouldQueue
 
             // Проверяем наличие временных данных в кастомных свойствах
             if (
-                !$media->hasCustomProperty('temp_path_for_async_move') ||
-                !$media->hasCustomProperty('temp_disk_for_async_move')
+                !$media->hasCustomProperty('path') ||
+                !$media->hasCustomProperty('disk') ||
+                !$media->hasCustomProperty('is_processing_async')
             ) {
                 Log::error('Отсутствуют необходимые данные для асинхронного перемещения', [
                     'media_id' => $this->mediaId,
@@ -76,8 +77,8 @@ class ProcessAsyncMediaFileMoveJob implements ShouldQueue
             }
 
             // Получаем информацию о временном файле
-            $tempDisk = $media->getCustomProperty('temp_disk_for_async_move');
-            $tempPath = $media->getCustomProperty('temp_path_for_async_move');
+            $tempDisk = $media->getCustomProperty('disk');
+            $tempPath = $media->getCustomProperty('path');
 
             // Проверяем, существует ли временный файл
             if (!Storage::disk($tempDisk)->exists($tempPath)) {
@@ -90,12 +91,12 @@ class ProcessAsyncMediaFileMoveJob implements ShouldQueue
             }
 
             // Определяем целевой диск
-            $finalDisk = $media->disk;
+            $finalDisk = $media->getCustomProperty('disk', null);
             if (!$finalDisk) {
                 // Если диск не определен, используем диск по умолчанию
                 $collection = $media->collection_name ?? 'default';
                 $model = Container::getInstance()->make($media->model_type);
-                $finalDisk = $model->getMediaCollection($collection)->diskName ?? Config::get('media-library.disk_name');
+                $finalDisk = $model->getMediaCollection($collection)->diskName ?? Config::get('media-library.disk_name', 's3');
 
                 if (!$finalDisk) {
                     Log::error('Не удалось определить целевой диск для асинхронного перемещения', [
@@ -122,16 +123,9 @@ class ProcessAsyncMediaFileMoveJob implements ShouldQueue
             // Обновляем запись медиа
             $customProperties = $media->custom_properties;
 
-            // Удаляем временные свойства
-            unset($customProperties['temp_path_for_async_move']);
-            unset($customProperties['temp_disk_for_async_move']);
-            unset($customProperties['original_filename_for_async_move']);
-            unset($customProperties['is_processing_async_move']);
-
-            // Сохраняем только path для CustomPathGenerator, если его нет в custom_properties
-            if (!isset($customProperties['path']) && $media->hasCustomProperty('path')) {
-                $customProperties['path'] = $media->getCustomProperty('path');
-            }
+            // Удаляем временные свойства, но сохраняем path для CustomPathGenerator
+            unset($customProperties['original_filename']);
+            unset($customProperties['is_processing_async']);
 
             // Обновляем запись медиа
             $media->custom_properties = $customProperties;

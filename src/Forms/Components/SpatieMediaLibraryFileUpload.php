@@ -181,11 +181,10 @@ class SpatieMediaLibraryFileUpload extends FileUpload
 
                 // Кастомные свойства для асинхронного перемещения
                 $customProperties = $component->getCustomProperties();
-                $customProperties['path'] = $directoryPath;
-                $customProperties['temp_path_for_async_move'] = $pathToTemporaryLivewireFile;
-                $customProperties['temp_disk_for_async_move'] = $disk;
-                $customProperties['original_filename_for_async_move'] = $file->getClientOriginalName();
-                $customProperties['is_processing_async_move'] = true;
+                $customProperties['path'] = $pathToTemporaryLivewireFile;
+                $customProperties['disk'] = $disk;
+                $customProperties['original_filename'] = $file->getClientOriginalName();
+                $customProperties['is_processing_async'] = true;
 
                 $mediaRecord->custom_properties = $customProperties;
 
