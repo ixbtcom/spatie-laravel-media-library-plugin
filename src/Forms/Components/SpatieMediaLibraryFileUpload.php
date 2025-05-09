@@ -6,6 +6,7 @@ use Closure;
 use Filament\Support\Concerns\HasMediaFilter;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Collection;
+use Illuminate\Support\Facades\Bus;
 use League\Flysystem\UnableToCheckFileExistence;
 use Livewire\Features\SupportFileUploads\TemporaryUploadedFile;
 use Spatie\MediaLibrary\HasMedia;
@@ -436,12 +437,8 @@ class SpatieMediaLibraryFileUpload extends FileUpload
     protected function dispatchAsyncJob(int $mediaId): void
     {
         $jobClass = "\\Filament\\SpatieLaravelMediaLibraryPlugin\\Jobs\\ProcessAsyncMediaFileMoveJob";
-        $job = new $jobClass($mediaId);
 
-        if (method_exists($job, 'dispatch')) {
-            $job->dispatch();
-        } else {
-            dispatch($job);
-        }
+        // Используем статический метод dispatch класса задания
+        $jobClass::dispatch($mediaId);
     }
 }
