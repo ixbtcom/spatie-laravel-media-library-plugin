@@ -476,8 +476,8 @@ class SpatieMediaLibraryFileUpload extends FileUpload
     {
         $jobClass = "\\Filament\\SpatieLaravelMediaLibraryPlugin\\Jobs\\ProcessAsyncMediaFileMoveJob";
 
-        // Используем статический метод dispatch класса задания
-        $jobClass::dispatch($mediaId);
+        // Запускаем задачу после фиксации транзакции, чтобы запись Media уже существовала
+        $jobClass::dispatch($mediaId)->afterCommit();
     }
 
     /**

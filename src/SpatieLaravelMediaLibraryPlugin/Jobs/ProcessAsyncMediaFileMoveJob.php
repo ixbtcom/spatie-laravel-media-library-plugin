@@ -128,12 +128,21 @@ class ProcessAsyncMediaFileMoveJob implements ShouldQueue
             }
             echo "✅ Целевой диск: {$finalDisk}\n";
 
-            // Получаем генератор путей и определяем целевой путь
-            echo "📁 Определяем целевой путь файла...\n";
-            $pathGenerator = PathGeneratorFactory::create($media);
-            $finalDirectory = $pathGenerator->getPath($media);
+            // --- Исправление вычисления целевой директории ---
+            // Нам нужно скопировать файл из временного livewire-tmp в папку с ID медиа,
+            // а не создавать вложенную структуру livewire-tmp/...
+            // Поэтому игнорируем custom property `path`, если она существует.
+            $prefix = Config::get('media-library.prefix', '');
+            $baseDirectory = $media->getKey();
+            if ($prefix !== '') {
+                $baseDirectory = $prefix . '/' . $baseDirectory;
+            }
+            $finalDirectory = rtrim($baseDirectory, '/') . '/';
+
+            // Имя файла остаётся тем же
             $filename = $media->file_name;
             $finalPath = $finalDirectory . $filename;
+
             echo "📁 Целевой путь: {$finalDisk}:{$finalPath}\n";
 
             Log::info("Копирование файла", [
@@ -228,24 +237,29 @@ class ProcessAsyncMediaFileMoveJob implements ShouldQueue
                         $s3Client = Storage::disk($finalDisk)->getClient();
                         $bucket = config("filesystems.disks.{$finalDisk}.bucket");
 
-                        // Проверяем, есть ли блокировка публичного доступа на уровне бакета
-                        try {
-                            $blockConfig = $s3Client->getPublicAccessBlock([
-                                'Bucket' => $bucket,
-                            ]);
-                            $isBlocked = $blockConfig['BlockPublicAcls'] ?? false;
+                        // Проверяем, есть ли кастомный endpoint (Ceph/MinIO). Если он есть, то пропускаем проверку
+                        $endpoint = config("filesystems.disks.{$finalDisk}.endpoint");
 
-                            if ($isBlocked) {
-                                echo "⚠️ Публичный доступ заблокирован на уровне бакета S3. ACL не будут применены.\n";
-                                Log::info('Публичный доступ заблокирован на уровне бакета S3', [
-                                    'media_id' => $this->mediaId,
-                                    'bucket' => $bucket
+                        if (!$endpoint) {
+                            // Проверяем, есть ли блокировка публичного доступа на уровне бакета
+                            try {
+                                $blockConfig = $s3Client->getPublicAccessBlock([
+                                    'Bucket' => $bucket,
                                 ]);
-                                // Всё равно пробуем установить видимость, т.к. это может работать через политики бакета
+                                $isBlocked = $blockConfig['BlockPublicAcls'] ?? false;
+
+                                if ($isBlocked) {
+                                    echo "⚠️ Публичный доступ заблокирован на уровне бакета S3. ACL не будут применены.\n";
+                                    Log::info('Публичный доступ заблокирован на уровне бакета S3', [
+                                        'media_id' => $this->mediaId,
+                                        'bucket' => $bucket
+                                    ]);
+                                    // Всё равно пробуем установить видимость, т.к. это может работать через политики бакета
+                                }
+                            } catch (\Throwable $e) {
+                                // Если не удалось получить настройки блокировки, продолжаем
+                                echo "⚠️ Не удалось проверить настройки блокировки публичного доступа: " . $e->getMessage() . "\n";
                             }
-                        } catch (\Throwable $e) {
-                            // Если не удалось получить настройки блокировки, продолжаем
-                            echo "⚠️ Не удалось проверить настройки блокировки публичного доступа: " . $e->getMessage() . "\n";
                         }
 
                         // Пробуем установить публичный доступ через Laravel Storage
