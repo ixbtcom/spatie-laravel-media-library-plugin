@@ -233,8 +233,17 @@ class SpatieMediaLibraryFileUpload extends FileUpload
                 // Позиция в порядке сортировки
                 $mediaClass::setNewOrder([$mediaRecord->id]);
 
-                // Диспетчеризация задания для асинхронного перемещения
-                $component->dispatchAsyncJob($mediaRecord->id);
+                // Определяем, нужно ли использовать асинхронную обработку
+                // Если исходный и целевой диски совпадают, можно сделать синхронно
+                $targetDisk = $component->getDiskName();
+                if ($disk === $targetDisk) {
+                    // Для одного диска делаем синхронное перемещение
+                    echo "📁 Диски совпадают, выполняем синхронное перемещение файла...\n";
+                    $component->processSynchronously($mediaRecord->id);
+                } else {
+                    // Для разных дисков используем очередь
+                    $component->dispatchAsyncJob($mediaRecord->id);
+                }
 
                 return $uuid;
             }
@@ -464,6 +473,18 @@ class SpatieMediaLibraryFileUpload extends FileUpload
     public function shouldUseAsyncFileMove(): bool
     {
         return (bool) $this->evaluate($this->useAsyncFileMove);
+    }
+
+    /**
+     * Синхронное перемещение файла (для оптимизации с одним диском).
+     *
+     * @param int $mediaId
+     * @return void
+     */
+    protected function processSynchronously(int $mediaId): void
+    {
+        $jobClass = "\\Filament\\SpatieLaravelMediaLibraryPlugin\\Jobs\\ProcessAsyncMediaFileMoveJob";
+        $jobClass::processSynchronously($mediaId);
     }
 
     /**

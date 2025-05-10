@@ -46,6 +46,19 @@ class ProcessAsyncMediaFileMoveJob implements ShouldQueue
     }
 
     /**
+     * Статический метод для синхронного выполнения процесса перемещения файла.
+     * Используется для оптимизации, если исходный и целевой диски одинаковы.
+     *
+     * @param int $mediaId
+     * @return void
+     */
+    public static function processSynchronously(int $mediaId): void
+    {
+        $job = new static($mediaId);
+        $job->handle();
+    }
+
+    /**
      * Выполнение задания.
      *
      * @return void
