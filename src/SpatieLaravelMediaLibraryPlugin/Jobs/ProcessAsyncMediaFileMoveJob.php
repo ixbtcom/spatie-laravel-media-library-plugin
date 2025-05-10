@@ -229,6 +229,16 @@ class ProcessAsyncMediaFileMoveJob implements ShouldQueue
             unset($customProperties['path']);
             unset($customProperties['disk']);
 
+            // Устанавливаем статус 'uploaded' для файла
+            echo "📋 Устанавливаем статус 'uploaded' для файла...\n";
+            $customProperties['status'] = 'uploaded';
+            Log::info('Установлен статус "uploaded" для файла', [
+                'media_id' => $this->mediaId,
+                'mime_type' => $media->mime_type,
+                'collection' => $media->collection_name,
+                'size' => $media->size
+            ]);
+
             echo "🔄 Обновленные custom_properties: " . json_encode($customProperties) . "\n";
 
             // Делаем файл публичным
