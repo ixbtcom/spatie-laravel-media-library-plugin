@@ -69,20 +69,18 @@ class ProcessAsyncMediaFileMoveJob implements ShouldQueue
         Log::info("Начинаем асинхронное перемещение файла", ['media_id' => $this->mediaId]);
 
         try {
-            // Получаем запись медиа
-            echo "📄 Получаем информацию о медиа-записи...\n";
-            $mediaClass = Config::get('media-library.media_model', Media::class);
-            $media = $mediaClass::find($this->mediaId);
+            echo "🔍 Начинаем обработку Media ID: {$this->mediaId}...\n";
+
+            // Находим запись Media
+            $media = Media::find($this->mediaId);
 
             if (!$media) {
-                echo "❌ Медиа не найдено (ID: {$this->mediaId})\n";
-                Log::error('Медиа не найдено для асинхронного перемещения', [
-                    'media_id' => $this->mediaId,
-                ]);
-                return;
+                echo "❌ Ошибка: Media не найдена! ID: {$this->mediaId}\n";
+                throw new \Exception("Media не найдена! ID: {$this->mediaId}");
             }
 
-            echo "✅ Медиа найдено: {$media->file_name} (ID: {$media->id})\n";
+            echo "✅ Media найдена. Имя файла: {$media->file_name}\n";
+            echo "📊 Размер файла: " . $this->formatBytes($media->size) . "\n";
 
             // Проверяем наличие временных данных в кастомных свойствах
             if (
@@ -313,7 +311,7 @@ class ProcessAsyncMediaFileMoveJob implements ShouldQueue
             $media->save();
 
             // Проверяем, что изменения сохранились
-            $refreshedMedia = $mediaClass::find($this->mediaId);
+            $refreshedMedia = Media::find($this->mediaId);
             echo "✅ Проверка после сохранения. Custom properties: " . json_encode($refreshedMedia->custom_properties) . "\n";
             echo "✅ Финальный диск: " . $refreshedMedia->disk . "\n";
 
@@ -434,13 +432,13 @@ class ProcessAsyncMediaFileMoveJob implements ShouldQueue
     }
 
     /**
-     * Форматирует размер файла в человекочитаемый вид
+     * Форматирует размер в байтах в человекочитаемый формат
      *
      * @param int $bytes
      * @param int $precision
      * @return string
      */
-    protected function formatBytes($bytes, $precision = 2): string
+    protected function formatBytes(int $bytes, int $precision = 2): string
     {
         $units = ['B', 'KB', 'MB', 'GB', 'TB'];
 
