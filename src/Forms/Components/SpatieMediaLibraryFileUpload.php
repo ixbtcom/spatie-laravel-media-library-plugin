@@ -117,7 +117,7 @@ class SpatieMediaLibraryFileUpload extends FileUpload
                 try {
                     // Всегда используем подписанный URL для временных файлов, т.к. они обычно приватные
                     // Для S3 это сгенерирует presigned URL с ограниченным сроком действия
-                    $expiration = now()->addMinutes(5);
+                    $expiration = now()->addMinutes(60);
                     $url = Storage::disk($tmpDisk)->temporaryUrl($tmpPath, $expiration);
 
                     return [
@@ -477,8 +477,12 @@ class SpatieMediaLibraryFileUpload extends FileUpload
     {
         $jobClass = "\\Filament\\SpatieLaravelMediaLibraryPlugin\\Jobs\\ProcessAsyncMediaFileMoveJob";
 
-        // Запускаем задачу после фиксации транзакции, чтобы запись Media уже существовала
-        $jobClass::dispatch($mediaId)->afterCommit();
+        // Вместо запуска задачи в очереди, используем defer() для выполнения после завершения запроса
+        defer(function () use ($jobClass, $mediaId) {
+            // Создаем экземпляр класса и вызываем handle() напрямую
+            $job = new $jobClass($mediaId);
+            $job->handle();
+        });
     }
 
     /**

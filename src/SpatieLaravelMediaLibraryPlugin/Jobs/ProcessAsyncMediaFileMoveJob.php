@@ -14,7 +14,10 @@ use Illuminate\Support\Facades\Config;
 use Illuminate\Container\Container;
 use Spatie\MediaLibrary\MediaCollections\Models\Media;
 use Spatie\MediaLibrary\Support\PathGenerator\PathGeneratorFactory;
+use Spatie\MediaLibrary\MediaCollections\Events\MediaHasBeenAddedEvent;
+use Illuminate\Support\Facades\Event;
 use Throwable;
+use App\Services\BunnyCdnVideoServiceV2;
 
 class ProcessAsyncMediaFileMoveJob implements ShouldQueue
 {
@@ -43,6 +46,7 @@ class ProcessAsyncMediaFileMoveJob implements ShouldQueue
     public function __construct(int $mediaId)
     {
         $this->mediaId = $mediaId;
+        $this->onQueue('default');
     }
 
     /**
@@ -52,29 +56,27 @@ class ProcessAsyncMediaFileMoveJob implements ShouldQueue
      */
     public function handle(): void
     {
-        echo "🚀 Начинаем асинхронное перемещение файла (ID: {$this->mediaId})\n";
         Log::info("Начинаем асинхронное перемещение файла", ['media_id' => $this->mediaId]);
 
         try {
-            echo "🔍 Начинаем обработку Media ID: {$this->mediaId}...\n";
-
             // Находим запись Media
             $media = Media::find($this->mediaId);
 
             if (!$media) {
-                echo "❌ Ошибка: Media не найдена! ID: {$this->mediaId}\n";
                 throw new \Exception("Media не найдена! ID: {$this->mediaId}");
             }
 
-            echo "✅ Media найдена. Имя файла: {$media->file_name}\n";
-            echo "📊 Размер файла: " . $this->formatBytes($media->size) . "\n";
+            Log::debug('Media найдена. Файл для перемещения', [
+                'media_id' => $this->mediaId,
+                'file_name' => $media->file_name,
+                'size' => $this->formatBytes($media->size)
+            ]);
 
             // Проверяем наличие временных данных в кастомных свойствах
             if (
                 !$media->hasCustomProperty('path') ||
                 !$media->hasCustomProperty('disk')
             ) {
-                echo "❌ Отсутствуют необходимые данные в кастомных свойствах\n";
                 Log::error('Отсутствуют необходимые данные для асинхронного перемещения', [
                     'media_id' => $this->mediaId,
                     'custom_properties' => $media->custom_properties,
@@ -86,7 +88,6 @@ class ProcessAsyncMediaFileMoveJob implements ShouldQueue
             $tempDisk = $media->getCustomProperty('disk');
             $tempPath = $media->getCustomProperty('path');
 
-            echo "📁 Временный файл: {$tempDisk}:{$tempPath}\n";
             Log::info("Информация о временном файле", [
                 'media_id' => $this->mediaId,
                 'temp_disk' => $tempDisk,
@@ -94,9 +95,7 @@ class ProcessAsyncMediaFileMoveJob implements ShouldQueue
             ]);
 
             // Проверяем, существует ли временный файл
-            echo "🔍 Проверяем существование временного файла...\n";
             if (!Storage::disk($tempDisk)->exists($tempPath)) {
-                echo "❌ Временный файл не найден: {$tempDisk}:{$tempPath}\n";
                 Log::error('Временный файл не найден для асинхронного перемещения', [
                     'media_id' => $this->mediaId,
                     'temp_disk' => $tempDisk,
@@ -104,19 +103,14 @@ class ProcessAsyncMediaFileMoveJob implements ShouldQueue
                 ]);
                 return;
             }
-            echo "✅ Временный файл существует\n";
 
-            // !!! ВАЖНОЕ ИЗМЕНЕНИЕ !!!
             // Сначала делаем временный файл публичным, сразу же
             // это позволит сразу использовать файл до завершения других операций
-            echo "🔓 Устанавливаем публичный доступ к временному файлу...\n";
             if ($this->isS3Disk($tempDisk)) {
-                echo "☁️ Настраиваем публичный доступ для S3 временного файла...\n";
                 Storage::disk($tempDisk)->setVisibility($tempPath, 'public');
 
                 // Проверяем видимость
                 $visibility = Storage::disk($tempDisk)->getVisibility($tempPath);
-                echo "📊 Текущая видимость временного файла: {$visibility}\n";
 
                 // Если видимость не установлена, это критическая ошибка - останавливаем процесс
                 if ($visibility !== 'public') {
@@ -127,10 +121,8 @@ class ProcessAsyncMediaFileMoveJob implements ShouldQueue
                 // Для не-S3 дисков просто устанавливаем видимость
                 Storage::disk($tempDisk)->setVisibility($tempPath, 'public');
             }
-            echo "✅ Публичный доступ установлен для временного файла\n";
 
             // Определяем целевой диск
-            echo "🔍 Определяем целевой диск для хранения...\n";
             $finalDisk = $media->getCustomProperty('disk', null);
             if (!$finalDisk) {
                 // Если диск не определен, используем диск по умолчанию
@@ -139,7 +131,6 @@ class ProcessAsyncMediaFileMoveJob implements ShouldQueue
                 $finalDisk = $model->getMediaCollection($collection)->diskName ?? Config::get('media-library.disk_name', 's3');
 
                 if (!$finalDisk) {
-                    echo "❌ Не удалось определить целевой диск\n";
                     Log::error('Не удалось определить целевой диск для асинхронного перемещения', [
                         'media_id' => $this->mediaId,
                         'collection' => $collection,
@@ -147,7 +138,6 @@ class ProcessAsyncMediaFileMoveJob implements ShouldQueue
                     return;
                 }
             }
-            echo "✅ Целевой диск: {$finalDisk}\n";
 
             // --- Исправление вычисления целевой директории ---
             // Нам нужно скопировать файл из временного livewire-tmp в папку с ID медиа,
@@ -164,8 +154,6 @@ class ProcessAsyncMediaFileMoveJob implements ShouldQueue
             $filename = $media->file_name;
             $finalPath = $finalDirectory . $filename;
 
-            echo "📁 Целевой путь: {$finalDisk}:{$finalPath}\n";
-
             Log::info("Копирование файла", [
                 'media_id' => $this->mediaId,
                 'from' => "{$tempDisk}:{$tempPath}",
@@ -176,40 +164,34 @@ class ProcessAsyncMediaFileMoveJob implements ShouldQueue
             // 1. КОПИРУЕМ ФАЙЛ из временного хранилища в целевое
             // Оптимизация для S3: используем прямое копирование на стороне сервера вместо загрузки файла в память
             if ($this->isS3Disk($tempDisk) && $this->isS3Disk($finalDisk)) {
-                echo "☁️ Используем прямое копирование S3 -> S3...\n";
                 try {
                     $this->copyBetweenS3($tempDisk, $tempPath, $finalDisk, $finalPath);
-                    echo "✅ S3 копирование успешно завершено\n";
                 } catch (\Exception $e) {
-                    echo "❌ Ошибка при S3 копировании: " . $e->getMessage() . "\n";
                     throw $e;
                 }
             } else {
-                echo "📤 Используем потоковую передачу между дисками...\n";
                 try {
                     $this->copyUsingStreams($tempDisk, $tempPath, $finalDisk, $finalPath);
-                    echo "✅ Потоковое копирование успешно завершено\n";
                 } catch (\Exception $e) {
-                    echo "❌ Ошибка при потоковом копировании: " . $e->getMessage() . "\n";
                     throw $e;
                 }
             }
 
             // Проверяем, существует ли файл по новому пути
-            echo "🔍 Проверяем, что файл успешно скопирован...\n";
             if (Storage::disk($finalDisk)->exists($finalPath)) {
                 $fileSize = Storage::disk($finalDisk)->size($finalPath);
-                echo "✅ Файл успешно скопирован в {$finalDisk}:{$finalPath} (размер: " . $this->formatBytes($fileSize) . ")\n";
+                Log::info("Файл успешно скопирован", [
+                    'media_id' => $this->mediaId,
+                    'path' => "{$finalDisk}:{$finalPath}",
+                    'size' => $this->formatBytes($fileSize)
+                ]);
 
                 // 2. ДЕЛАЕМ ФАЙЛ ПУБЛИЧНЫМ - без try/catch и без проверки method_exists
-                echo "🔓 Устанавливаем публичный доступ к файлу...\n";
                 if ($this->isS3Disk($finalDisk)) {
-                    echo "☁️ Настраиваем публичный доступ для S3...\n";
                     Storage::disk($finalDisk)->setVisibility($finalPath, 'public');
 
                     // Проверяем видимость
                     $visibility = Storage::disk($finalDisk)->getVisibility($finalPath);
-                    echo "📊 Текущая видимость файла: {$visibility}\n";
 
                     // Если видимость не установлена, это критическая ошибка - останавливаем процесс
                     if ($visibility !== 'public') {
@@ -219,23 +201,17 @@ class ProcessAsyncMediaFileMoveJob implements ShouldQueue
                     // Для не-S3 дисков просто устанавливаем видимость
                     Storage::disk($finalDisk)->setVisibility($finalPath, 'public');
                 }
-                echo "✅ Публичный доступ установлен\n";
 
                 // 3. ОБНОВЛЯЕМ МОДЕЛЬ И УСТАНАВЛИВАЕМ СТАТУС - только после публичного доступа
-                echo "📝 Обновляем запись медиа...\n";
-                $customProperties = $media->custom_properties;
-
-                echo "🔍 Текущие custom_properties: " . json_encode($customProperties) . "\n";
 
                 // Удаляем временные свойства
-                unset($customProperties['original_filename']);
-                unset($customProperties['is_processing_async']);
-                unset($customProperties['path']);
-                unset($customProperties['disk']);
+                $media->forgetCustomProperty('original_filename');
+                $media->forgetCustomProperty('is_processing_async');
+                $media->forgetCustomProperty('path');
+                $media->forgetCustomProperty('disk');
 
                 // Устанавливаем статус 'uploaded' для файла
-                echo "📋 Устанавливаем статус 'uploaded' для файла...\n";
-                $customProperties['status'] = 'uploaded';
+                $media->setCustomProperty('status', 'uploaded');
                 Log::info('Установлен статус "uploaded" для файла', [
                     'media_id' => $this->mediaId,
                     'mime_type' => $media->mime_type,
@@ -243,26 +219,17 @@ class ProcessAsyncMediaFileMoveJob implements ShouldQueue
                     'size' => $media->size
                 ]);
 
-                echo "🔄 Обновленные custom_properties: " . json_encode($customProperties) . "\n";
-
                 // Обновляем запись медиа
-                $media->custom_properties = $customProperties;
                 $media->disk = $finalDisk;
                 $media->save();
 
-                // Проверяем, что изменения сохранились
-                $refreshedMedia = Media::find($this->mediaId);
-                echo "✅ Проверка после сохранения. Custom properties: " . json_encode($refreshedMedia->custom_properties) . "\n";
-                echo "✅ Финальный диск: " . $refreshedMedia->disk . "\n";
+                // Вызываем событие MediaHasBeenAddedEvent для запуска обработчиков медиа-файла
+                Event::dispatch(new MediaHasBeenAddedEvent($media));
 
                 // 4. УДАЛЯЕМ ВРЕМЕННЫЙ ФАЙЛ - только после успешного обновления модели
-                echo "🗑️ Удаляем временный файл {$tempDisk}:{$tempPath}...\n";
                 $deleteResult = Storage::disk($tempDisk)->delete($tempPath);
 
-                if ($deleteResult) {
-                    echo "✅ Временный файл успешно удален\n";
-                } else {
-                    echo "⚠️ Не удалось удалить временный файл, но копирование прошло успешно\n";
+                if (!$deleteResult) {
                     Log::warning('Не удалось удалить временный файл после асинхронного перемещения', [
                         'media_id' => $this->mediaId,
                         'temp_disk' => $tempDisk,
@@ -270,14 +237,12 @@ class ProcessAsyncMediaFileMoveJob implements ShouldQueue
                     ]);
                 }
 
-                echo "🎉 Файл успешно перемещен асинхронно\n";
                 Log::info('Файл успешно перемещен асинхронно', [
                     'media_id' => $this->mediaId,
                     'from' => "{$tempDisk}:{$tempPath}",
                     'to' => "{$finalDisk}:{$finalPath}",
                 ]);
             } else {
-                echo "⚠️ Не удалось найти скопированный файл по пути {$finalDisk}:{$finalPath}. Процесс остановлен.\n";
                 Log::error('Файл не обнаружен по целевому пути после копирования', [
                     'media_id' => $this->mediaId,
                     'target_disk' => $finalDisk,
@@ -286,15 +251,11 @@ class ProcessAsyncMediaFileMoveJob implements ShouldQueue
                 throw new \RuntimeException("Файл не найден по целевому пути: {$finalDisk}:{$finalPath}");
             }
         } catch (Throwable $e) {
-            echo "❌ ОШИБКА: " . $e->getMessage() . "\n";
             Log::error('Ошибка при асинхронном перемещении файла', [
                 'media_id' => $this->mediaId,
                 'error' => $e->getMessage(),
                 'trace' => $e->getTraceAsString(),
             ]);
-
-            // Пробрасываем исключение для повторного выполнения задания
-            throw $e;
         }
     }
 
@@ -323,20 +284,15 @@ class ProcessAsyncMediaFileMoveJob implements ShouldQueue
     protected function copyBetweenS3(string $sourceDisk, string $sourcePath, string $targetDisk, string $targetPath): void
     {
         // Получаем S3 клиенты для обоих дисков
-        echo "  📊 Получаем клиенты S3...\n";
         $s3Source = Storage::disk($sourceDisk)->getClient();
         $s3Target = Storage::disk($targetDisk)->getClient();
 
         // Получаем информацию о бакетах
-        echo "  📊 Получаем информацию о бакетах...\n";
         $sourceBucket = config("filesystems.disks.{$sourceDisk}.bucket");
         $targetBucket = config("filesystems.disks.{$targetDisk}.bucket");
 
-        echo "  📊 Исходный бакет: {$sourceBucket}, Целевой бакет: {$targetBucket}\n";
-
         // Если это один и тот же бакет, используем простое копирование
         if ($sourceBucket === $targetBucket && $s3Source === $s3Target) {
-            echo "  📊 Копирование внутри одного бакета: {$sourceBucket}\n";
             $s3Source->copyObject([
                 'Bucket' => $targetBucket,
                 'CopySource' => urlencode($sourceBucket . '/' . $sourcePath),
@@ -344,14 +300,12 @@ class ProcessAsyncMediaFileMoveJob implements ShouldQueue
             ]);
         } else {
             // Если разные бакеты, используем объект источника как источник копирования
-            echo "  📊 Копирование между разными бакетами: {$sourceBucket} -> {$targetBucket}\n";
             $s3Target->copyObject([
                 'Bucket' => $targetBucket,
                 'CopySource' => urlencode($sourceBucket . '/' . $sourcePath),
                 'Key' => $targetPath,
             ]);
         }
-        echo "  ✅ S3 операция копирования выполнена\n";
     }
 
     /**
@@ -367,30 +321,22 @@ class ProcessAsyncMediaFileMoveJob implements ShouldQueue
     protected function copyUsingStreams(string $sourceDisk, string $sourcePath, string $targetDisk, string $targetPath): void
     {
         // Открываем поток для чтения из исходного файла
-        echo "  📊 Открываем поток для чтения из {$sourceDisk}:{$sourcePath}...\n";
         $sourceStream = Storage::disk($sourceDisk)->readStream($sourcePath);
 
         if ($sourceStream === false) {
-            echo "  ❌ Не удалось открыть поток для чтения\n";
             throw new \RuntimeException("Не удалось открыть поток для чтения из {$sourceDisk}:{$sourcePath}");
         }
-        echo "  ✅ Поток успешно открыт\n";
 
         // Записываем поток в целевой файл
-        echo "  📊 Записываем поток в {$targetDisk}:{$targetPath}...\n";
         $success = Storage::disk($targetDisk)->writeStream($targetPath, $sourceStream);
 
         if (is_resource($sourceStream)) {
-            echo "  📊 Закрываем исходный поток...\n";
             fclose($sourceStream);
         }
 
         if (!$success) {
-            echo "  ❌ Не удалось записать файл\n";
             throw new \RuntimeException("Не удалось записать файл в {$targetDisk}:{$targetPath}");
         }
-
-        echo "  ✅ Поток успешно записан в целевой файл\n";
     }
 
     /**
