@@ -163,7 +163,7 @@ class ProcessAsyncMediaFileMoveJob implements ShouldQueue
                 'size' => Storage::disk($tempDisk)->size($tempPath)
             ]);
 
-            // Копируем файл из временного хранилища в целевое
+            // 1. КОПИРУЕМ ФАЙЛ из временного хранилища в целевое
             // Оптимизация для S3: используем прямое копирование на стороне сервера вместо загрузки файла в память
             if ($this->isS3Disk($tempDisk) && $this->isS3Disk($finalDisk)) {
                 echo "☁️ Используем прямое копирование S3 -> S3...\n";
@@ -191,7 +191,61 @@ class ProcessAsyncMediaFileMoveJob implements ShouldQueue
                 $fileSize = Storage::disk($finalDisk)->size($finalPath);
                 echo "✅ Файл успешно скопирован в {$finalDisk}:{$finalPath} (размер: " . $this->formatBytes($fileSize) . ")\n";
 
-                // Удаляем временный файл после успешного копирования и проверки
+                // 2. ДЕЛАЕМ ФАЙЛ ПУБЛИЧНЫМ - без try/catch и без проверки method_exists
+                echo "🔓 Устанавливаем публичный доступ к файлу...\n";
+                if ($this->isS3Disk($finalDisk)) {
+                    echo "☁️ Настраиваем публичный доступ для S3...\n";
+                    Storage::disk($finalDisk)->setVisibility($finalPath, 'public');
+
+                    // Проверяем видимость
+                    $visibility = Storage::disk($finalDisk)->getVisibility($finalPath);
+                    echo "📊 Текущая видимость файла: {$visibility}\n";
+
+                    // Если видимость не установлена, это критическая ошибка - останавливаем процесс
+                    if ($visibility !== 'public') {
+                        throw new \RuntimeException("Не удалось установить публичную видимость для файла: {$finalDisk}:{$finalPath}");
+                    }
+                } else {
+                    // Для не-S3 дисков просто устанавливаем видимость
+                    Storage::disk($finalDisk)->setVisibility($finalPath, 'public');
+                }
+                echo "✅ Публичный доступ установлен\n";
+
+                // 3. ОБНОВЛЯЕМ МОДЕЛЬ И УСТАНАВЛИВАЕМ СТАТУС - только после публичного доступа
+                echo "📝 Обновляем запись медиа...\n";
+                $customProperties = $media->custom_properties;
+
+                echo "🔍 Текущие custom_properties: " . json_encode($customProperties) . "\n";
+
+                // Удаляем временные свойства
+                unset($customProperties['original_filename']);
+                unset($customProperties['is_processing_async']);
+                unset($customProperties['path']);
+                unset($customProperties['disk']);
+
+                // Устанавливаем статус 'uploaded' для файла
+                echo "📋 Устанавливаем статус 'uploaded' для файла...\n";
+                $customProperties['status'] = 'uploaded';
+                Log::info('Установлен статус "uploaded" для файла', [
+                    'media_id' => $this->mediaId,
+                    'mime_type' => $media->mime_type,
+                    'collection' => $media->collection_name,
+                    'size' => $media->size
+                ]);
+
+                echo "🔄 Обновленные custom_properties: " . json_encode($customProperties) . "\n";
+
+                // Обновляем запись медиа
+                $media->custom_properties = $customProperties;
+                $media->disk = $finalDisk;
+                $media->save();
+
+                // Проверяем, что изменения сохранились
+                $refreshedMedia = Media::find($this->mediaId);
+                echo "✅ Проверка после сохранения. Custom properties: " . json_encode($refreshedMedia->custom_properties) . "\n";
+                echo "✅ Финальный диск: " . $refreshedMedia->disk . "\n";
+
+                // 4. УДАЛЯЕМ ВРЕМЕННЫЙ ФАЙЛ - только после успешного обновления модели
                 echo "🗑️ Удаляем временный файл {$tempDisk}:{$tempPath}...\n";
                 $deleteResult = Storage::disk($tempDisk)->delete($tempPath);
 
@@ -205,134 +259,22 @@ class ProcessAsyncMediaFileMoveJob implements ShouldQueue
                         'temp_path' => $tempPath,
                     ]);
                 }
+
+                echo "🎉 Файл успешно перемещен асинхронно\n";
+                Log::info('Файл успешно перемещен асинхронно', [
+                    'media_id' => $this->mediaId,
+                    'from' => "{$tempDisk}:{$tempPath}",
+                    'to' => "{$finalDisk}:{$finalPath}",
+                ]);
             } else {
-                echo "⚠️ Не удалось найти скопированный файл по пути {$finalDisk}:{$finalPath}. Временный файл не будет удален.\n";
-                Log::warning('Файл не обнаружен по целевому пути после копирования', [
+                echo "⚠️ Не удалось найти скопированный файл по пути {$finalDisk}:{$finalPath}. Процесс остановлен.\n";
+                Log::error('Файл не обнаружен по целевому пути после копирования', [
                     'media_id' => $this->mediaId,
                     'target_disk' => $finalDisk,
                     'target_path' => $finalPath,
                 ]);
+                throw new \RuntimeException("Файл не найден по целевому пути: {$finalDisk}:{$finalPath}");
             }
-
-            // Обновляем запись медиа
-            echo "📝 Обновляем запись медиа...\n";
-            $customProperties = $media->custom_properties;
-
-            echo "🔍 Текущие custom_properties: " . json_encode($customProperties) . "\n";
-
-            // Удаляем временные свойства
-            unset($customProperties['original_filename']);
-            unset($customProperties['is_processing_async']);
-            // Также удаляем свойства пути и диска, т.к. они относятся к временному файлу
-            // Важно! Удаляем свойства path и disk, чтобы в дальнейшем медиа использовало
-            // стандартные механизмы определения пути через PathGenerator
-            unset($customProperties['path']);
-            unset($customProperties['disk']);
-
-            // Устанавливаем статус 'uploaded' для файла
-            echo "📋 Устанавливаем статус 'uploaded' для файла...\n";
-            $customProperties['status'] = 'uploaded';
-            Log::info('Установлен статус "uploaded" для файла', [
-                'media_id' => $this->mediaId,
-                'mime_type' => $media->mime_type,
-                'collection' => $media->collection_name,
-                'size' => $media->size
-            ]);
-
-            echo "🔄 Обновленные custom_properties: " . json_encode($customProperties) . "\n";
-
-            // Делаем файл публичным
-            echo "🔓 Устанавливаем публичный доступ к файлу...\n";
-            if (method_exists($media, 'markAsPubliclyAccessible')) {
-                $media->markAsPubliclyAccessible();
-                echo "✅ Файл отмечен как публично доступный через markAsPubliclyAccessible()\n";
-            } else {
-                // Альтернативный способ, если метод не существует
-                // Убедимся, что файл доступен публично на соответствующем диске
-                try {
-                    // Проверяем, является ли диск S3
-                    if ($this->isS3Disk($finalDisk)) {
-                        echo "☁️ Обнаружен S3 диск, настраиваем публичный доступ...\n";
-
-                        // Получаем S3 клиент и информацию о бакете
-                        $s3Client = Storage::disk($finalDisk)->getClient();
-                        $bucket = config("filesystems.disks.{$finalDisk}.bucket");
-
-                        // Проверяем, есть ли кастомный endpoint (Ceph/MinIO). Если он есть, то пропускаем проверку
-                        $endpoint = config("filesystems.disks.{$finalDisk}.endpoint");
-
-                        if (!$endpoint) {
-                            // Проверяем, есть ли блокировка публичного доступа на уровне бакета
-                            try {
-                                $blockConfig = $s3Client->getPublicAccessBlock([
-                                    'Bucket' => $bucket,
-                                ]);
-                                $isBlocked = $blockConfig['BlockPublicAcls'] ?? false;
-
-                                if ($isBlocked) {
-                                    echo "⚠️ Публичный доступ заблокирован на уровне бакета S3. ACL не будут применены.\n";
-                                    Log::info('Публичный доступ заблокирован на уровне бакета S3', [
-                                        'media_id' => $this->mediaId,
-                                        'bucket' => $bucket
-                                    ]);
-                                    // Всё равно пробуем установить видимость, т.к. это может работать через политики бакета
-                                }
-                            } catch (\Throwable $e) {
-                                // Если не удалось получить настройки блокировки, продолжаем
-                                echo "⚠️ Не удалось проверить настройки блокировки публичного доступа: " . $e->getMessage() . "\n";
-                            }
-                        }
-
-                        // Пробуем установить публичный доступ через Laravel Storage
-                        Storage::disk($finalDisk)->setVisibility($finalPath, 'public');
-                        echo "✅ Публичный доступ установлен через setVisibility() для S3\n";
-
-                        // Дополнительно проверяем, действительно ли изменилась видимость
-                        $visibility = Storage::disk($finalDisk)->getVisibility($finalPath);
-                        echo "📊 Текущая видимость файла: {$visibility}\n";
-
-                        // Если видимость не public, возможно, блокировка переопределила настройки
-                        if ($visibility !== 'public') {
-                            echo "⚠️ Файл не имеет публичной видимости. Возможно, из-за настроек бакета S3.\n";
-                            Log::warning('Не удалось установить публичную видимость для S3 файла', [
-                                'media_id' => $this->mediaId,
-                                'final_disk' => $finalDisk,
-                                'final_path' => $finalPath,
-                                'current_visibility' => $visibility
-                            ]);
-                        }
-                    } else {
-                        // Для не-S3 дисков просто устанавливаем видимость
-                        Storage::disk($finalDisk)->setVisibility($finalPath, 'public');
-                        echo "✅ Публичный доступ установлен через setVisibility()\n";
-                    }
-                } catch (\Throwable $e) {
-                    echo "⚠️ Не удалось установить публичный доступ через setVisibility(): " . $e->getMessage() . "\n";
-                    Log::warning('Не удалось установить публичный доступ к файлу', [
-                        'media_id' => $this->mediaId,
-                        'error' => $e->getMessage(),
-                    ]);
-                }
-            }
-
-            // Обновляем запись медиа
-            $media->custom_properties = $customProperties;
-            $media->disk = $finalDisk;
-            $media->save();
-
-            // Проверяем, что изменения сохранились
-            $refreshedMedia = Media::find($this->mediaId);
-            echo "✅ Проверка после сохранения. Custom properties: " . json_encode($refreshedMedia->custom_properties) . "\n";
-            echo "✅ Финальный диск: " . $refreshedMedia->disk . "\n";
-
-            // Не вызываем regenerateAllDerivedFiles(), так как этот метод не существует
-
-            echo "🎉 Файл успешно перемещен асинхронно\n";
-            Log::info('Файл успешно перемещен асинхронно', [
-                'media_id' => $this->mediaId,
-                'from' => "{$tempDisk}:{$tempPath}",
-                'to' => "{$finalDisk}:{$finalPath}",
-            ]);
         } catch (Throwable $e) {
             echo "❌ ОШИБКА: " . $e->getMessage() . "\n";
             Log::error('Ошибка при асинхронном перемещении файла', [
