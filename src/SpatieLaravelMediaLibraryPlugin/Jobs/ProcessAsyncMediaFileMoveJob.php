@@ -45,18 +45,7 @@ class ProcessAsyncMediaFileMoveJob implements ShouldQueue
         $this->mediaId = $mediaId;
     }
 
-    /**
-     * Статический метод для синхронного выполнения процесса перемещения файла.
-     * Используется для оптимизации, если исходный и целевой диски одинаковы.
-     *
-     * @param int $mediaId
-     * @return void
-     */
-    public static function processSynchronously(int $mediaId): void
-    {
-        $job = new static($mediaId);
-        $job->handle();
-    }
+
 
     /**
      * Выполнение задания.
@@ -121,22 +110,9 @@ class ProcessAsyncMediaFileMoveJob implements ShouldQueue
 
             // Определяем целевой диск
             echo "🔍 Определяем целевой диск для хранения...\n";
-            $finalDisk = $media->getCustomProperty('disk', null);
-            if (!$finalDisk) {
-                // Если диск не определен, используем диск по умолчанию
-                $collection = $media->collection_name ?? 'default';
-                $model = Container::getInstance()->make($media->model_type);
-                $finalDisk = $model->getMediaCollection($collection)->diskName ?? Config::get('media-library.disk_name', 's3');
+            $finalDisk = $media->disk;
 
-                if (!$finalDisk) {
-                    echo "❌ Не удалось определить целевой диск\n";
-                    Log::error('Не удалось определить целевой диск для асинхронного перемещения', [
-                        'media_id' => $this->mediaId,
-                        'collection' => $collection,
-                    ]);
-                    return;
-                }
-            }
+
             echo "✅ Целевой диск: {$finalDisk}\n";
 
             // --- Исправление вычисления целевой директории ---
@@ -160,7 +136,7 @@ class ProcessAsyncMediaFileMoveJob implements ShouldQueue
                 'media_id' => $this->mediaId,
                 'from' => "{$tempDisk}:{$tempPath}",
                 'to' => "{$finalDisk}:{$finalPath}",
-                'size' => Storage::disk($tempDisk)->size($tempPath)
+
             ]);
 
             // 1. КОПИРУЕМ ФАЙЛ из временного хранилища в целевое
