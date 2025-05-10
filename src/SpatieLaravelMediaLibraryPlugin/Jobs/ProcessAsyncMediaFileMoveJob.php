@@ -211,6 +211,75 @@ class ProcessAsyncMediaFileMoveJob implements ShouldQueue
 
             echo "🔄 Обновленные custom_properties: " . json_encode($customProperties) . "\n";
 
+            // Делаем файл публичным
+            echo "🔓 Устанавливаем публичный доступ к файлу...\n";
+            if (method_exists($media, 'markAsPubliclyAccessible')) {
+                $media->markAsPubliclyAccessible();
+                echo "✅ Файл отмечен как публично доступный через markAsPubliclyAccessible()\n";
+            } else {
+                // Альтернативный способ, если метод не существует
+                // Убедимся, что файл доступен публично на соответствующем диске
+                try {
+                    // Проверяем, является ли диск S3
+                    if ($this->isS3Disk($finalDisk)) {
+                        echo "☁️ Обнаружен S3 диск, настраиваем публичный доступ...\n";
+
+                        // Получаем S3 клиент и информацию о бакете
+                        $s3Client = Storage::disk($finalDisk)->getClient();
+                        $bucket = config("filesystems.disks.{$finalDisk}.bucket");
+
+                        // Проверяем, есть ли блокировка публичного доступа на уровне бакета
+                        try {
+                            $blockConfig = $s3Client->getPublicAccessBlock([
+                                'Bucket' => $bucket,
+                            ]);
+                            $isBlocked = $blockConfig['BlockPublicAcls'] ?? false;
+
+                            if ($isBlocked) {
+                                echo "⚠️ Публичный доступ заблокирован на уровне бакета S3. ACL не будут применены.\n";
+                                Log::info('Публичный доступ заблокирован на уровне бакета S3', [
+                                    'media_id' => $this->mediaId,
+                                    'bucket' => $bucket
+                                ]);
+                                // Всё равно пробуем установить видимость, т.к. это может работать через политики бакета
+                            }
+                        } catch (\Throwable $e) {
+                            // Если не удалось получить настройки блокировки, продолжаем
+                            echo "⚠️ Не удалось проверить настройки блокировки публичного доступа: " . $e->getMessage() . "\n";
+                        }
+
+                        // Пробуем установить публичный доступ через Laravel Storage
+                        Storage::disk($finalDisk)->setVisibility($finalPath, 'public');
+                        echo "✅ Публичный доступ установлен через setVisibility() для S3\n";
+
+                        // Дополнительно проверяем, действительно ли изменилась видимость
+                        $visibility = Storage::disk($finalDisk)->getVisibility($finalPath);
+                        echo "📊 Текущая видимость файла: {$visibility}\n";
+
+                        // Если видимость не public, возможно, блокировка переопределила настройки
+                        if ($visibility !== 'public') {
+                            echo "⚠️ Файл не имеет публичной видимости. Возможно, из-за настроек бакета S3.\n";
+                            Log::warning('Не удалось установить публичную видимость для S3 файла', [
+                                'media_id' => $this->mediaId,
+                                'final_disk' => $finalDisk,
+                                'final_path' => $finalPath,
+                                'current_visibility' => $visibility
+                            ]);
+                        }
+                    } else {
+                        // Для не-S3 дисков просто устанавливаем видимость
+                        Storage::disk($finalDisk)->setVisibility($finalPath, 'public');
+                        echo "✅ Публичный доступ установлен через setVisibility()\n";
+                    }
+                } catch (\Throwable $e) {
+                    echo "⚠️ Не удалось установить публичный доступ через setVisibility(): " . $e->getMessage() . "\n";
+                    Log::warning('Не удалось установить публичный доступ к файлу', [
+                        'media_id' => $this->mediaId,
+                        'error' => $e->getMessage(),
+                    ]);
+                }
+            }
+
             // Обновляем запись медиа
             $media->custom_properties = $customProperties;
             $media->disk = $finalDisk;
