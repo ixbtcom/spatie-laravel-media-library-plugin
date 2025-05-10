@@ -45,8 +45,6 @@ class ProcessAsyncMediaFileMoveJob implements ShouldQueue
         $this->mediaId = $mediaId;
     }
 
-
-
     /**
      * Выполнение задания.
      *
@@ -108,11 +106,47 @@ class ProcessAsyncMediaFileMoveJob implements ShouldQueue
             }
             echo "✅ Временный файл существует\n";
 
+            // !!! ВАЖНОЕ ИЗМЕНЕНИЕ !!!
+            // Сначала делаем временный файл публичным, сразу же
+            // это позволит сразу использовать файл до завершения других операций
+            echo "🔓 Устанавливаем публичный доступ к временному файлу...\n";
+            if ($this->isS3Disk($tempDisk)) {
+                echo "☁️ Настраиваем публичный доступ для S3 временного файла...\n";
+                Storage::disk($tempDisk)->setVisibility($tempPath, 'public');
+
+                // Проверяем видимость
+                $visibility = Storage::disk($tempDisk)->getVisibility($tempPath);
+                echo "📊 Текущая видимость временного файла: {$visibility}\n";
+
+                // Если видимость не установлена, это критическая ошибка - останавливаем процесс
+                if ($visibility !== 'public') {
+                    Log::warning("Не удалось установить публичную видимость для временного файла: {$tempDisk}:{$tempPath}");
+                    // Продолжаем выполнение, несмотря на ошибку видимости, т.к. это некритично
+                }
+            } else {
+                // Для не-S3 дисков просто устанавливаем видимость
+                Storage::disk($tempDisk)->setVisibility($tempPath, 'public');
+            }
+            echo "✅ Публичный доступ установлен для временного файла\n";
+
             // Определяем целевой диск
             echo "🔍 Определяем целевой диск для хранения...\n";
-            $finalDisk = $media->disk;
+            $finalDisk = $media->getCustomProperty('disk', null);
+            if (!$finalDisk) {
+                // Если диск не определен, используем диск по умолчанию
+                $collection = $media->collection_name ?? 'default';
+                $model = Container::getInstance()->make($media->model_type);
+                $finalDisk = $model->getMediaCollection($collection)->diskName ?? Config::get('media-library.disk_name', 's3');
 
-
+                if (!$finalDisk) {
+                    echo "❌ Не удалось определить целевой диск\n";
+                    Log::error('Не удалось определить целевой диск для асинхронного перемещения', [
+                        'media_id' => $this->mediaId,
+                        'collection' => $collection,
+                    ]);
+                    return;
+                }
+            }
             echo "✅ Целевой диск: {$finalDisk}\n";
 
             // --- Исправление вычисления целевой директории ---
@@ -136,7 +170,7 @@ class ProcessAsyncMediaFileMoveJob implements ShouldQueue
                 'media_id' => $this->mediaId,
                 'from' => "{$tempDisk}:{$tempPath}",
                 'to' => "{$finalDisk}:{$finalPath}",
-
+                'size' => Storage::disk($tempDisk)->size($tempPath)
             ]);
 
             // 1. КОПИРУЕМ ФАЙЛ из временного хранилища в целевое
