@@ -1,6 +1,6 @@
 <?php
 
-namespace Filament\SpatieLaravelMediaLibraryPlugin\Collections;
+namespace Filament\SpatieLaravelMediaLibraryVideoPlugin\Collections;
 
 /**
  * An empty type class to model that all media collections are allowed on a component.

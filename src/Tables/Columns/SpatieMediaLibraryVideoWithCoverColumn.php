@@ -1,18 +1,20 @@
 <?php
 
-namespace Filament\Infolists\Components;
+namespace Filament\Tables\Columns;
 
 use Closure;
-use Filament\SpatieLaravelMediaLibraryPlugin\Collections\AllMediaCollections;
+use Filament\SpatieLaravelMediaLibraryVideoPlugin\Collections\AllMediaCollections;
 use Filament\Support\Concerns\HasMediaFilter;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Relations\Relation;
 use Illuminate\Support\Arr;
 use Illuminate\Support\Collection;
 use Spatie\MediaLibrary\MediaCollections\Models\Collections\MediaCollection;
 use Spatie\MediaLibrary\MediaCollections\Models\Media;
 use Throwable;
 
-class SpatieMediaLibraryImageEntry extends ImageEntry
+class SpatieMediaLibraryVideoWithCoverColumn extends ImageColumn
 {
     use HasMediaFilter;
 
@@ -24,21 +26,21 @@ class SpatieMediaLibraryImageEntry extends ImageEntry
     {
         parent::setUp();
 
-        $this->defaultImageUrl(function (SpatieMediaLibraryImageEntry $component, Model $record): ?string {
-            if ($component->hasRelationship($record)) {
-                $record = $component->getRelationshipResults($record);
+        $this->defaultImageUrl(function (SpatieMediaLibraryVideoWithCoverColumn $column, Model $record): ?string {
+            if ($column->hasRelationship($record)) {
+                $record = $column->getRelationshipResults($record);
             }
 
             $records = Arr::wrap($record);
 
-            $collection = $component->getCollection();
+            $collection = $column->getCollection();
 
             if (! is_string($collection)) {
                 $collection = 'default';
             }
 
             foreach ($records as $record) {
-                $url = $record->getFallbackMediaUrl($collection, $component->getConversion() ?? '');
+                $url = $record->getFallbackMediaUrl($collection, $column->getConversion() ?? '');
 
                 if (blank($url)) {
                     continue;
@@ -85,10 +87,6 @@ class SpatieMediaLibraryImageEntry extends ImageEntry
     public function getImageUrl(?string $state = null): ?string
     {
         $record = $this->getRecord();
-
-        if (! $record) {
-            return null;
-        }
 
         if ($this->hasRelationship($record)) {
             $record = $this->getRelationshipResults($record);
@@ -162,5 +160,23 @@ class SpatieMediaLibraryImageEntry extends ImageEntry
         }
 
         return array_unique($state);
+    }
+
+    public function applyEagerLoading(Builder | Relation $query): Builder | Relation
+    {
+        if ($this->isHidden()) {
+            return $query;
+        }
+
+        /** @phpstan-ignore-next-line */
+        $modifyMediaQuery = fn (Builder | Relation $query) => $query->ordered();
+
+        if ($this->hasRelationship($query->getModel())) {
+            return $query->with([
+                "{$this->getRelationshipName()}.media" => $modifyMediaQuery,
+            ]);
+        }
+
+        return $query->with(['media' => $modifyMediaQuery]);
     }
 }

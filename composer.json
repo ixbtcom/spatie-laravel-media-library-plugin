@@ -1,6 +1,6 @@
 {
-    "name": "filament/spatie-laravel-media-library-plugin",
-    "description": "Filament support for `spatie/laravel-medialibrary`.",
+    "name": "ixbt/spatie-laravel-video-with-cover-plugin",
+    "description": "Video with cover for `spatie/laravel-medialibrary`.",
     "license": "MIT",
     "homepage": "https://github.com/filamentphp/filament",
     "support": {
