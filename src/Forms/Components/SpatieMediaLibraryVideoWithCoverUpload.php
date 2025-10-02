@@ -3,7 +3,7 @@
 namespace Filament\Forms\Components;
 
 use Closure;
-use Filament\Support\Concerns\HasMediaFilter;
+use Filament\Support\Concerns\HasVideoMediaFilter;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Collection;
 use League\Flysystem\UnableToCheckFileExistence;
@@ -16,7 +16,7 @@ use Throwable;
 
 class SpatieMediaLibraryVideoWithCoverUpload extends FileUpload
 {
-    use HasMediaFilter;
+    use HasVideoMediaFilter;
 
     protected string | Closure | null $collection = null;
 

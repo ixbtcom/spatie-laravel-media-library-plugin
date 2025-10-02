@@ -4,7 +4,7 @@ namespace Filament\Infolists\Components;
 
 use Closure;
 use Filament\SpatieLaravelMediaLibraryVideoPlugin\Collections\AllMediaCollections;
-use Filament\Support\Concerns\HasMediaFilter;
+use Filament\Support\Concerns\HasVideoMediaFilter;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Arr;
 use Illuminate\Support\Collection;
@@ -14,7 +14,7 @@ use Throwable;
 
 class SpatieMediaLibraryVideoWithCoverEntry extends ImageEntry
 {
-    use HasMediaFilter;
+    use HasVideoMediaFilter;
 
     protected string | AllMediaCollections | Closure | null $collection = null;
 

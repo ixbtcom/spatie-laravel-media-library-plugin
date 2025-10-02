@@ -4,7 +4,7 @@ namespace Filament\Tables\Columns;
 
 use Closure;
 use Filament\SpatieLaravelMediaLibraryVideoPlugin\Collections\AllMediaCollections;
-use Filament\Support\Concerns\HasMediaFilter;
+use Filament\Support\Concerns\HasVideoMediaFilter;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\Relation;
@@ -16,7 +16,7 @@ use Throwable;
 
 class SpatieMediaLibraryVideoWithCoverColumn extends ImageColumn
 {
-    use HasMediaFilter;
+    use HasVideoMediaFilter;
 
     protected string | AllMediaCollections | Closure | null $collection = null;
 

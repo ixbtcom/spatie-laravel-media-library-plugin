@@ -5,7 +5,7 @@ namespace Filament\Support\Concerns;
 use Closure;
 use Illuminate\Support\Collection;
 
-trait HasMediaFilter
+trait HasVideoMediaFilter
 {
     protected ?Closure $filterMediaUsing = null;
 
